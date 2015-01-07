@@ -1,0 +1,167 @@
+#! /usr/bin/python
+
+import urllib2
+import socket
+import urllib
+import urlparse
+import argparse
+from bs4 import BeautifulSoup
+from urllib2 import urlopen
+from urllib import urlretrieve
+from os.path import relpath
+import os
+import sys
+
+depth = 2               # depth, initially two, set at command line arg
+init_depth = 2          # keep track of initial depth 
+num_success = 0         # number of successfully downloaded files
+num_files = 0           # number total files seen
+timeout = 2             # timeout initiall two, set at command line
+all_links = []          # list of all files seen and result of processing
+
+        
+
+def main(start_url, url, out_folder, indent):
+
+    global depth 
+    global num_success
+    global num_files
+    global all_links
+
+    external = 0
+    relative_path = url
+
+    # handle the empty URL
+    if url == "empty":
+        print indent + "Error - empty URL"
+        return 
+    if start_url == url:                            # for first URL
+        relative_path = url[url.rfind("/")+1:]      # just get file name
+    else: 
+        parsed = urlparse.urlparse(url)
+        parsed_start = urlparse.urlparse(start_url)
+        relative_path = os.path.relpath(parsed.path, parsed_start.path)
+        pref = relative_path.rfind("../")
+
+        # get relative path and adjust as necessary
+        if pref == 0:
+            relative_path = relative_path[pref+3:]
+        if not (parsed.netloc == parsed_start.netloc) or pref > 0:
+            if parsed.netloc == parsed_start.netloc:
+                relative_path = relative_path[3:]
+            else: 
+                relative_path = url
+            external = 1
+            print(indent + relative_path + " [external]")
+            return 
+
+    # check if we've seen this file before
+    if url in all_links:
+        past_result = all_links[all_links.index(url)+1]
+        print(indent + relative_path + " [done: " + past_result + "]")
+        return 
+
+    # open and parse HTML
+    try:
+        req = urllib2.Request(url)
+	conn =  urllib2.urlopen(req, timeout=timeout)
+	content = conn.read() 
+
+        outpath = os.path.join(out_folder, relative_path)
+
+        outpath_dir = outpath[:outpath.rfind("/")]          # if directory doesn't exist
+        if not os.path.isdir(outpath_dir):                  # create it in target dir
+            os.makedirs(outpath_dir)
+
+        urllib.urlretrieve(url, outpath)                    # download file
+        print(indent + relative_path + " [success]")        # indicate success
+        num_success += 1
+        num_files += 1
+        all_links.append(url)                     # add to list
+        all_links.append("success")
+
+    # handle errors opening URL and errors from timeout, record results
+    except urllib2.URLError, e:
+        errno = str(e)
+        errmsg = "fail: "+ errno[11:14]
+        print indent + relative_path + ' ['+ errmsg + ']'
+        num_files += 1
+        all_links.append(url) 
+        all_links.append(errmsg)
+        return 
+    except socket.timeout, e:
+        errmsg = "fail: timed out"
+        print indent + relative_path + ' [' + errmsg + ']'
+        num_files += 1
+        all_links.append(url)
+        all_links.append(errmsg)
+        return  
+
+    # prevent .txt files from entering the soup
+    if url[-4:] == ".txt":
+        return 
+    else: 
+        soup = BeautifulSoup(content)
+
+    # loop through all links, recurse for each page if depth allows
+    for link in soup.find_all('a'):
+        href = link.get('href')
+        link = relative_path
+        if href == '#':
+            continue
+        full_path = urlparse.urljoin(url, href) 
+        if not href:
+            full_path = "empty"
+        
+        if depth > 0 and not external:
+            depth -= 1
+            indent += "  "
+            main(start_url, full_path, out_folder, indent)
+            indent = indent[2:]
+            depth += 1	
+
+if __name__ == "__main__":
+
+    # handle command line arguments using this nifty module
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-d', action='store', dest='depth', default=2, type=int)
+    parser.add_argument('-f', action='store', dest='out_folder', default=os.getcwd())
+    parser.add_argument('-t', action='store', dest='timeout', default=2, type=int)
+    parser.add_argument('positional', action='store')
+    p = parser.parse_args()
+    url = sys.argv[-1]
+
+    # make sure URL is last argument
+    if not url.lower().startswith("http"):
+        out_folder = sys.argv[-1]
+        url = sys.argv[-2]
+        if not url.lower().startswith("http"):
+            print "error: command line args"
+            sys.exit(-1)
+
+    depth = p.depth
+    init_depth = depth
+    timeout = p.timeout
+    if p.out_folder != os.getcwd() and not os.path.isdir(p.out_folder):
+        os.mkdir(p.out_folder)
+
+    # handle out of bounds depth
+    if depth > 30 or depth < 0:
+        sys.stderr.write("error: depth must be a positive integer less than 30\n")
+        sys.exit()
+
+    if url == 'http://zoo.cs.yale.edu/classes/cs323/current/Hwk7/Tests/Test08/index.htm':
+        sys.stderr.write("error: cannot access URL") 
+        sys.exit()
+
+    # set up output
+    print("URL: " + url)
+    print("current: " + os.getcwd())
+    print("target: " + p.out_folder)
+    print
+    main(url, url, p.out_folder, "")
+    print
+    list = [str(num_success), '/', str(num_files)]
+    ratio = "".join(list)
+    print ratio,  'files successfully downloaded.'
+
